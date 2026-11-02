@@ -99,6 +99,11 @@ Item {
   property bool opened: false
   property bool shown: false          // drives the fade/zoom-in once mapped
   property bool closing: false        // fading out before the host hides us
+  // The entrance is over: cells created from now on (search, removal) show
+  // at once instead of replaying the ripple.
+  property bool revealed: false
+  onShownChanged: if (shown) revealedTimer.restart(); else revealed = false
+  Timer { id: revealedTimer; interval: 900; onTriggered: root.revealed = true }
   property string filterText: ""
   property var items: []
   property int selectedIndex: 0
@@ -139,6 +144,11 @@ Item {
   function open(payloadJson) {
     root.closing = false
     root.hoverArmed = false
+    root.editMode = false
+    root.confirmTarget = null
+    root.removedIds = ({})
+    root.revealed = false
+    root.scanProtected()
     root.filterText = ""
     root.selectedIndex = 0
     root.cursorActive = false
@@ -199,6 +209,7 @@ Item {
       page: root.currentPage, pages: root.pageCount, stripX: strip.x, stripY: strip.y,
       grid: (function() { var p = pagesView.mapToItem(null, 0, 0); return [p.x, p.y, pagesView.width, pagesView.height] })(),
       firstItem: root.items.length ? root.items[0].id : "",
+      editMode: root.editMode, protectedCount: Object.keys(root.protectedIds).length,
       first: rows && rows.length ? Object.keys(rows[0]) : []
     })
   }
@@ -206,9 +217,10 @@ Item {
   // ---- data --------------------------------------------------------------
 
   function rebuild() {
-    root.items = root.apps
+    var list = root.apps
       ? Model.itemsFromRows(root.apps.sortedEntries(root.filterText))
       : Model.itemsFromEntries(DesktopEntries.applications.values || [], root.filterText, root.hiddenIds)
+    root.items = list.filter(function(item) { return root.removedIds[item.id] !== true })
     if (root.selectedIndex >= root.items.length) root.selectedIndex = Math.max(0, root.items.length - 1)
   }
 
@@ -366,6 +378,180 @@ Item {
     root.dismiss()
   }
 
+  // ---- uninstalling ------------------------------------------------------
+  //
+  // Launchpad-style: a long press on an icon enters edit mode (icons wiggle,
+  // a cross on the removable ones), or Delete on the selected app. The
+  // confirmation first asks bin/savanna-uninstall what removing it involves
+  // (a pacman dry run for packages), then runs it while Savanna stays open:
+  // the icon vanishes and the others slide into place. Packages ask for the
+  // password through the shell's polkit agent. Apps Omarchy relies on are
+  // protected: see bin/savanna-protected.
+
+  property bool editMode: false
+  property var protectedIds: ({})
+  property var confirmTarget: null
+  property int confirmChoice: 0       // 0 = Cancel (or OK), 1 = Uninstall
+  property string confirmPhase: "ask" // ask | working | failed
+  property var confirmPlan: ({})      // from `savanna-uninstall plan`; {} while it runs
+  property string confirmError: ""
+  readonly property bool confirmProtected: confirmTarget !== null && isProtected(confirmTarget.id)
+  readonly property bool planReady: confirmPlan.kind !== undefined
+  // Nothing to confirm: protected, unknown to the uninstaller, or pacman refuses.
+  readonly property bool confirmBlocked: confirmProtected
+    || (planReady && (confirmPlan.kind === "unknown" || confirmPlan.blocked !== undefined))
+
+  function isProtected(id) { return root.protectedIds[String(id)] === true }
+
+  function scriptPath(name) {
+    return decodeURIComponent(String(Qt.resolvedUrl("bin/" + name)).replace(/^file:\/\//, ""))
+  }
+
+  function askRemove(index) {
+    var item = root.items[index]
+    if (!item) return
+    root.confirmChoice = 0
+    root.confirmPhase = "ask"
+    root.confirmPlan = ({})
+    root.confirmError = ""
+    root.confirmTarget = item
+    if (root.isProtected(item.id)) return
+    planProc.output = ""
+    planProc.command = [root.scriptPath("savanna-uninstall"), "plan", item.id]
+    planProc.running = true
+  }
+
+  function cancelRemove() {
+    if (root.confirmPhase === "working") return
+    root.confirmTarget = null
+  }
+
+  function applyConfirm() {
+    if (root.confirmPhase === "working") return
+    var item = root.confirmTarget
+    if (!item || root.confirmBlocked || root.confirmPhase === "failed" || root.confirmChoice !== 1) {
+      root.confirmTarget = null
+      return
+    }
+    if (!root.planReady) return        // still checking; Enter again in a moment
+    root.confirmPhase = "working"
+    removeProc.lastError = ""
+    removeProc.itemId = item.id
+    removeProc.command = [root.scriptPath("savanna-uninstall"), "run", item.id, item.name]
+    removeProc.running = true
+  }
+
+  function scanProtected() {
+    if (protectedScan.running) return
+    protectedScan.output = ""
+    protectedScan.running = true
+  }
+
+  Process {
+    id: protectedScan
+    property string output: ""
+    command: [root.scriptPath("savanna-protected")]
+    stdout: SplitParser { onRead: function(line) { protectedScan.output += line + "\n" } }
+    onExited: root.protectedIds = Model.parseHides(protectedScan.output)
+  }
+
+  Process {
+    id: planProc
+    property string output: ""
+    stdout: SplitParser { onRead: function(line) { planProc.output += line + "\n" } }
+    onExited: {
+      var plan = {}
+      planProc.output.split("\n").forEach(function(line) {
+        var i = line.indexOf("=")
+        if (i > 0) plan[line.slice(0, i)] = line.slice(i + 1)
+      })
+      if (!plan.kind) plan.kind = "unknown"
+      root.confirmPlan = plan
+    }
+  }
+
+  Process {
+    id: removeProc
+    property string itemId: ""
+    property string lastError: ""
+    stderr: SplitParser { onRead: function(line) { if (line.trim()) removeProc.lastError = line.trim() } }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.vanish(removeProc.itemId)   // first, so rebuilds stay on hold
+        root.confirmTarget = null
+        root.confirmPhase = "ask"
+      } else {
+        // pkexec: 126 = prompt dismissed, 127 = not authorised.
+        root.confirmError = exitCode === 126 || exitCode === 127
+          ? "The password prompt was cancelled. Nothing was removed."
+          : (removeProc.lastError || "The uninstaller stopped with code " + exitCode + ".")
+        root.confirmPhase = "failed"
+        root.confirmChoice = 0
+      }
+      keyCatcher.forceActiveFocus()
+    }
+  }
+
+  // The app list changes on disk as soon as an uninstall removes the entry,
+  // before the uninstaller even exits: hold those rebuilds until the removal
+  // animation has run, or the gap would close with a jump.
+  readonly property bool holdRebuild: confirmPhase === "working" || vanishingId !== ""
+  property bool rebuildPending: false
+  onHoldRebuildChanged: if (!holdRebuild && rebuildPending) refresh()
+
+  function refresh() {
+    if (root.holdRebuild) {
+      root.rebuildPending = true
+      return
+    }
+    root.rebuildPending = false
+    root.rebuild()
+  }
+
+  // Removal animation: the icon shrinks away, then the grid is rebuilt
+  // without it and every cell that moved slides from its old spot (FLIP).
+  property string vanishingId: ""
+  property var removedIds: ({})       // gone until the desktop entries catch up
+  property var flipFrom: ({})         // id -> index before the rebuild
+
+  function vanish(id) {
+    root.vanishingId = String(id)
+    vanishTimer.restart()
+  }
+
+  Timer {
+    id: vanishTimer
+    interval: root.ms(230)
+    onTriggered: {
+      var from = {}
+      for (var i = 0; i < root.items.length; i++) from[root.items[i].id] = i
+      var removed = {}
+      for (var k in root.removedIds) removed[k] = true
+      removed[root.vanishingId] = true
+      root.flipFrom = from
+      root.removedIds = removed
+      root.rebuild()
+      root.rebuildPending = false        // this rebuild already has the new list
+      root.flipFrom = ({})
+      root.vanishingId = ""
+    }
+  }
+
+  // Top-left corner of a grid index, in strip coordinates.
+  function cellPos(index) {
+    var n = Model.perPage(root.columns, root.rows)
+    var page = Math.floor(index / n)
+    var local = index % n
+    var cw = pagesView.width / root.columns
+    var ch = pagesView.height / root.rows
+    return {
+      x: (root.vertical ? 0 : page * pagesView.width) + (local % root.columns) * cw,
+      y: (root.vertical ? page * pagesView.height : 0) + Math.floor(local / root.columns) * ch
+    }
+  }
+
+  Component.onCompleted: scanProtected()
+
   function iconFor(icon) {
     if (root.apps) return root.apps.iconSource(icon)
     var value = String(icon || "")
@@ -393,13 +579,13 @@ Item {
 
   Connections {
     target: DesktopEntries.applications
-    function onValuesChanged() { if (root.opened && !root.apps) root.rebuild() }
+    function onValuesChanged() { if (root.opened && !root.apps) root.refresh() }
   }
 
   Connections {
     target: root.apps
     ignoreUnknownSignals: true
-    function onAppsChanged() { if (root.opened) root.rebuild() }
+    function onAppsChanged() { if (root.opened) root.refresh() }
   }
 
   // ---- window ------------------------------------------------------------
@@ -412,7 +598,9 @@ Item {
     // Glass gets its own namespace so the Hyprland blur rule targets only it.
     WlrLayershell.namespace: root.glass ? "savanna-glass" : "savanna"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: root.opened ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+    // Let go of the keyboard while uninstalling: the polkit prompt needs it.
+    WlrLayershell.keyboardFocus: root.opened && root.confirmPhase !== "working"
+      ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     exclusionMode: ExclusionMode.Ignore
 
     // Centered mode: the desktop around the card is only dimmed.
@@ -425,10 +613,10 @@ Item {
       Behavior on opacity { NumberAnimation { duration: root.ms(220); easing.type: Easing.OutCubic } }
     }
 
-    // Click on empty space closes, like Launchpad.
+    // Click on empty space closes, like Launchpad (or leaves edit mode).
     MouseArea {
       anchors.fill: parent
-      onClicked: root.dismiss()
+      onClicked: root.editMode ? (root.editMode = false) : root.dismiss()
     }
 
     Item {
@@ -440,7 +628,21 @@ Item {
       Keys.onPressed: function(event) {
         if (root.closing) return
         var k = event.key
-        if (k === Qt.Key_Escape) {
+        if (root.confirmTarget) {
+          // The confirmation owns the keyboard while it is up.
+          if (k === Qt.Key_Escape) root.cancelRemove()
+          else if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) root.applyConfirm()
+          else if (root.confirmPhase === "ask" && !root.confirmBlocked
+                   && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Tab || k === Qt.Key_Backtab))
+            root.confirmChoice = 1 - root.confirmChoice
+          event.accepted = true
+          return
+        }
+        if (k === Qt.Key_Escape && root.editMode) {
+          root.editMode = false
+        } else if (k === Qt.Key_Delete && root.cursorActive && root.items.length > 0) {
+          root.askRemove(root.selectedIndex)
+        } else if (k === Qt.Key_Escape) {
           if (root.filterText) root.setFilter("")
           else root.dismiss()
         } else if (k === Qt.Key_Return || k === Qt.Key_Enter) {
@@ -837,7 +1039,11 @@ Item {
                   onCanceled: root.dragRelease()
                   // Empty space closes in fullscreen, like Launchpad; a card only
                   // closes from a click outside it.
-                  onClicked: if (!root.dragged && !root.centered) root.dismiss()
+                  onClicked: {
+                    if (root.dragged) return
+                    if (root.editMode) root.editMode = false
+                    else if (!root.centered) root.dismiss()
+                  }
                 }
 
                 // One soft drop shadow for the whole page: icons float above the
@@ -873,18 +1079,42 @@ Item {
                         Math.pow(index % root.columns - (root.columns - 1) / 2, 2)
                         + Math.pow(Math.floor(index / root.columns) - (root.rows - 1) / 2, 2))
                       // A cell waits for its icon, so a label never shows up alone.
-                    property real appear: root.shown && iconImage.status !== Image.Loading ? 1 : 0
+                      property real appear: root.shown && iconImage.status !== Image.Loading ? 1 : 0
                       Behavior on appear {
+                        enabled: !root.revealed
                         SequentialAnimation {
                           PauseAnimation { duration: root.ms(60 + cell.rippleDelay) }
                           NumberAnimation { duration: root.ms(340); easing.type: root.playful ? Easing.OutBack : Easing.OutCubic; easing.overshoot: 1.4 }
                         }
                       }
 
+                      // Uninstalled: shrink away before the grid closes the gap.
+                      property real gone: root.vanishingId === modelData.id ? 1 : 0
+                      Behavior on gone { NumberAnimation { duration: root.ms(220); easing.type: Easing.InCubic } }
+
+                      // After a removal, start where this app used to be and slide home.
+                      property real flipX: 0
+                      property real flipY: 0
+                      ParallelAnimation {
+                        id: flipAnim
+                        NumberAnimation { target: cell; property: "flipX"; to: 0; duration: root.ms(340); easing.type: Easing.OutCubic }
+                        NumberAnimation { target: cell; property: "flipY"; to: 0; duration: root.ms(340); easing.type: Easing.OutCubic }
+                      }
+                      Component.onCompleted: {
+                        var old = root.flipFrom[modelData.id]
+                        if (old === undefined || old === globalIndex) return
+                        var a = root.cellPos(old)
+                        var b = root.cellPos(globalIndex)
+                        flipX = a.x - b.x
+                        flipY = a.y - b.y
+                        flipAnim.start()
+                      }
+
                       Item {
                         anchors.fill: parent
-                        opacity: Math.min(1, cell.appear)
-                        scale: 0.75 + 0.25 * cell.appear
+                        opacity: Math.min(1, cell.appear) * (1 - cell.gone)
+                        scale: (0.75 + 0.25 * cell.appear) * (1 - 0.8 * cell.gone)
+                        transform: Translate { x: cell.flipX; y: cell.flipY }
 
                         // Selection tile, tinted with the accent.
                         Rectangle {
@@ -914,11 +1144,52 @@ Item {
                             sourceSize.height: page.iconSize * 2
                             source: root.iconFor(cell.modelData.icon)
                             fillMode: Image.PreserveAspectFit
-                            asynchronous: true
+                            // Once open, icons come from the cache: load them in place
+                            // so re-created cells never flash empty.
+                            asynchronous: !root.revealed
                             smooth: true
                             mipmap: true
                             scale: mouse.pressed ? 0.88 : (cell.selected ? 1.1 : 1)
                             Behavior on scale { NumberAnimation { duration: root.ms(240); easing.type: root.playful ? Easing.OutBack : Easing.OutCubic; easing.overshoot: 2 } }
+
+                            // Edit mode: icons wiggle, each slightly out of step.
+                            property real wiggle: 0
+                            rotation: root.editMode ? wiggle : 0
+                            SequentialAnimation on wiggle {
+                              running: root.editMode && root.animations !== "None"
+                              loops: Animation.Infinite
+                              PauseAnimation { duration: (cell.globalIndex * 47) % 140 }
+                              NumberAnimation { to: 2.4; duration: 110; easing.type: Easing.InOutSine }
+                              NumberAnimation { to: -2.4; duration: 220; easing.type: Easing.InOutSine }
+                              NumberAnimation { to: 0; duration: 110; easing.type: Easing.InOutSine }
+                            }
+
+                            // Cross on removable apps, top-left like Launchpad.
+                            Rectangle {
+                              id: removeBadge
+                              readonly property bool shown: root.editMode && !root.isProtected(cell.modelData.id)
+                              width: Style.space(24)
+                              height: width
+                              radius: width / 2
+                              x: -width * 0.3
+                              y: -height * 0.3
+                              visible: opacity > 0
+                              opacity: shown ? 1 : 0
+                              scale: shown ? 1 : 0.4
+                              color: Util.alpha(root.background, 0.92)
+                              border.width: 1
+                              border.color: Util.alpha(root.foreground, 0.35)
+                              Behavior on opacity { NumberAnimation { duration: root.ms(140) } }
+                              Behavior on scale { NumberAnimation { duration: root.ms(200); easing.type: root.playful ? Easing.OutBack : Easing.OutCubic } }
+
+                              Text {
+                                anchors.centerIn: parent
+                                text: "✕"
+                                color: root.foreground
+                                font.pixelSize: parent.width * 0.5
+                                font.bold: true
+                              }
+                            }
                           }
 
                           Text {
@@ -953,7 +1224,21 @@ Item {
                         }
                         onReleased: root.dragRelease()
                         onCanceled: root.dragRelease()
-                        onClicked: if (!root.dragged) root.launch(cell.globalIndex)
+                        pressAndHoldInterval: 450
+                        onPressAndHold: if (!root.dragging) root.editMode = true
+                        onClicked: function(ev) {
+                          if (root.dragged) return
+                          if (!root.editMode) {
+                            root.launch(cell.globalIndex)
+                            return
+                          }
+                          // In edit mode only the cross acts (with some slack).
+                          var p = mouse.mapToItem(removeBadge, ev.x, ev.y)
+                          var slack = Style.space(8)
+                          if (removeBadge.shown && p.x >= -slack && p.y >= -slack
+                              && p.x <= removeBadge.width + slack && p.y <= removeBadge.height + slack)
+                            root.askRemove(cell.globalIndex)
+                        }
                       }
                     }
                   }
@@ -1039,6 +1324,169 @@ Item {
       border.color: root.borderColor
     }
 
+
+    // Uninstall confirmation, over everything. Cancel is preselected; for an
+    // app Omarchy relies on it only explains why it stays.
+    Item {
+      anchors.fill: parent
+      visible: root.confirmTarget !== null
+      z: 10
+
+      Rectangle { anchors.fill: parent; color: Util.alpha(Commons.Color.background, 0.4) }
+      MouseArea { anchors.fill: parent; onClicked: root.cancelRemove() }   // ignored while working
+
+      Rectangle {
+        anchors.centerIn: parent
+        width: Style.space(400)
+        height: confirmColumn.implicitHeight + Style.space(48)
+        radius: Math.max(root.cornerRadius, Style.space(14))
+        color: Util.alpha(root.background, 0.97)
+        border.width: 1
+        border.color: root.confirmBlocked ? Util.alpha(root.foreground, 0.2) : Util.alpha(Commons.Color.urgent, 0.6)
+
+        MouseArea { anchors.fill: parent }   // clicks on the card stay on it
+
+        Column {
+          id: confirmColumn
+          anchors.centerIn: parent
+          width: parent.width - Style.space(48)
+          spacing: Style.space(14)
+
+          Image {
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: Style.space(64)
+            height: width
+            sourceSize.width: width * 2
+            sourceSize.height: height * 2
+            source: root.confirmTarget ? root.iconFor(root.confirmTarget.icon) : ""
+            fillMode: Image.PreserveAspectFit
+          }
+
+          Text {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            text: {
+              if (!root.confirmTarget) return ""
+              var name = "“" + root.confirmTarget.name + "”"
+              if (root.confirmProtected) return name + " is part of Omarchy"
+              if (root.confirmBlocked) return "Can't uninstall " + name
+              if (root.confirmPhase === "working") return "Uninstalling " + name + "…"
+              if (root.confirmPhase === "failed") return "Couldn't uninstall " + name
+              return "Uninstall " + name + "?"
+            }
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.heading
+            font.weight: Font.DemiBold
+          }
+
+          Text {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            text: {
+              var plan = root.confirmPlan
+              if (root.confirmProtected) return "Savanna leaves the apps Omarchy relies on alone."
+              if (root.confirmPhase === "failed") return root.confirmError
+              if (!root.planReady) return "Checking what goes with it…"
+              if (plan.kind === "unknown") return "Savanna doesn't know how this app was installed."
+              if (plan.blocked !== undefined)
+                return plan.blocked === "pacman refuses" ? "pacman refuses to remove it." : "It is needed by " + plan.blocked + "."
+              if (root.confirmPhase === "working")
+                return plan.kind === "package" ? "Enter your password in the prompt." : "One moment…"
+              if (plan.kind === "webapp") return "Removes this web app."
+              if (plan.kind === "tui") return "Removes this terminal app."
+              if (plan.kind === "user") return "Removes this launcher entry."
+              if (plan.kind === "flatpak") return "Removes the " + plan.package + " Flatpak."
+              // A package: name it, and what pacman would take along.
+              var also = plan.also ? plan.also.split(" ") : []
+              var text = "Removes the " + plan.package + " package"
+              if (also.length > 0)
+                text += " and " + (also.length === 1 ? "1 package" : also.length + " packages") + " only it needed ("
+                  + also.slice(0, 4).join(", ") + (also.length > 4 ? ", …" : "") + ")"
+              return text + ". You'll be asked for your password."
+            }
+            color: root.foreground
+            opacity: 0.7
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          // Working: three dots pulsing in turn.
+          Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: root.confirmPhase === "working"
+            spacing: Style.space(8)
+            Repeater {
+              model: 3
+              delegate: Rectangle {
+                required property int index
+                width: Style.space(8)
+                height: width
+                radius: width / 2
+                color: root.accent
+                opacity: 0.25
+                SequentialAnimation on opacity {
+                  running: root.confirmPhase === "working"
+                  loops: Animation.Infinite
+                  PauseAnimation { duration: index * 160 }
+                  NumberAnimation { to: 1; duration: 240 }
+                  NumberAnimation { to: 0.25; duration: 240 }
+                  PauseAnimation { duration: (2 - index) * 160 }
+                }
+              }
+            }
+          }
+
+          Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(12)
+
+            Repeater {
+              model: root.confirmPhase === "working" ? []
+                : root.confirmBlocked || root.confirmPhase === "failed" ? ["OK"] : ["Cancel", "Uninstall"]
+
+              delegate: Rectangle {
+                required property int index
+                required property string modelData
+                readonly property bool chosen: index === root.confirmChoice
+                readonly property bool danger: modelData === "Uninstall"
+                width: Style.space(140)
+                height: Style.font.body + Style.space(22)
+                radius: height / 2
+                color: chosen ? (danger ? Commons.Color.urgent : Util.alpha(root.accent, 0.25)) : Util.alpha(root.foreground, 0.08)
+                border.width: 1
+                border.color: chosen ? (danger ? Commons.Color.urgent : root.accent) : Util.alpha(root.foreground, 0.2)
+                Behavior on color { ColorAnimation { duration: root.ms(120) } }
+
+                Text {
+                  anchors.centerIn: parent
+                  text: parent.modelData
+                  color: parent.chosen && parent.danger ? root.background : root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  font.weight: Font.DemiBold
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onEntered: root.confirmChoice = parent.index
+                  onClicked: {
+                    root.confirmChoice = parent.index
+                    root.applyConfirm()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
 
     Timer { id: wheelCooldown; interval: 350 }
   }

@@ -55,8 +55,17 @@ omarchy-shell shell toggle x99.savanna '{}'
 | Move around     | Arrow keys                                                 |
 | Change page     | Two-finger swipe, mouse wheel, click-and-drag, Page Up / Page Down, or click a page dot |
 | Clear / close   | Escape clears the search, then closes. A click on empty space also closes |
+| Uninstall       | Long-press an icon: icons wiggle, click the ✕. Or select an app and press Delete. Escape or a click on empty space leaves this mode |
 
 Apps hidden in Omarchy's own launcher (`launcher.hides`) are hidden here too.
+
+Uninstalling always asks first, and the confirmation says what goes: for a
+package, pacman's dry run, including the dependencies only it needed. Savanna
+stays open: the icon vanishes and the others slide into place. Packages ask
+for your password in Omarchy's own prompt; web apps, terminal apps and
+Flatpaks need none. Apps Omarchy relies on (Files, Disks, Document Viewer, the
+browser…) have no ✕: Savanna only removes Omarchy's own apps when Omarchy
+lists them as optional preinstalls.
 
 ## Configure
 

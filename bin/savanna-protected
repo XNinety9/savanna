@@ -1,0 +1,17 @@
+#!/bin/bash
+# Prints the desktop ids Savanna will not offer to uninstall, one per line:
+# apps from Omarchy's base package list, minus the preinstalls Omarchy itself
+# lets you remove (the packages dropped by omarchy-remove-preinstalls). Web
+# apps, TUIs and anything installed later are not listed, so stay removable.
+
+dir="${OMARCHY_PATH:-/usr/share/omarchy}"
+
+removable=$(sed -n '/omarchy-pkg-drop/,/^fi/p' "$dir/bin/omarchy-remove-preinstalls" 2>/dev/null |
+  tr -s ' \\\t' '\n' | grep -E '^[a-z0-9][a-z0-9.+_-]*$' | grep -vx -e omarchy-pkg-drop -e fi)
+
+grep -hv '^\s*#' "$dir/install/omarchy-base.packages" 2>/dev/null | grep -v '^\s*$' |
+  grep -vxF -f <(printf '%s\n' $removable) |
+  xargs -r pacman -Qlq 2>/dev/null |
+  grep -E '^/usr/share/applications/[^/]+\.desktop$' |
+  sed 's#.*/##; s/\.desktop$//' | sort -u
+exit 0

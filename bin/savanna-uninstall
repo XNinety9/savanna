@@ -1,0 +1,83 @@
+#!/bin/bash
+# Savanna's uninstaller, built on Omarchy's own omarchy-remove-launcher-entry.
+#
+#   savanna-uninstall plan <desktop-id>          what removing it involves
+#   savanna-uninstall run  <desktop-id> <name>   remove it
+#
+# `plan` prints key=value lines: kind (webapp, tui, user, package, flatpak or
+# unknown), package, and for packages `also`, the dependencies pacman would
+# remove with it. It changes nothing.
+#
+# Web apps, TUIs and user entries go through Omarchy's remover unchanged.
+# Packages, which Omarchy removes in a terminal, are removed here with pkexec
+# instead: the shell's polkit agent asks for the password, so Savanna can stay
+# open. Flatpaks are removed non-interactively.
+
+mode=${1-}
+id=${2-}
+name=${3-$id}
+dir=${OMARCHY_PATH:-/usr/share/omarchy}
+
+[[ -n $mode && -n $id ]] || { echo "usage: savanna-uninstall plan|run <desktop-id> [name]" >&2; exit 2; }
+
+file=$id
+[[ $file == *.desktop ]] || file=$file.desktop
+user_dir=${XDG_DATA_HOME:-$HOME/.local/share}/applications
+
+# Same lookup order as omarchy-remove-launcher-entry: user entries first.
+desktop=""
+IFS=: read -ra data_dirs <<<"${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+for d in "$user_dir" "${data_dirs[@]/%//applications}"; do
+  if [[ -f $d/$file ]]; then
+    desktop=$d/$file
+    break
+  fi
+done
+
+# Same classification as omarchy-remove-launcher-entry.
+kind=unknown
+package=""
+if [[ -n $desktop ]]; then
+  exec_line=$(sed -n 's/^Exec=//p' "$desktop" | head -1)
+  if [[ $exec_line =~ omarchy-launch-webapp|omarchy-webapp-handler ]]; then
+    kind=webapp
+  elif [[ $exec_line =~ (^|[[:space:]])(\$TERMINAL|xdg-terminal-exec)[[:space:]].*-e([[:space:]]|$) ]]; then
+    kind=tui
+  elif [[ ${desktop%/*} == "$user_dir" ]]; then
+    kind=user
+  elif package=$(pacman -Qqo "$desktop" 2>/dev/null | head -1) && [[ -n $package ]]; then
+    kind=package
+  elif command -v flatpak >/dev/null && flatpak info "${file%.desktop}" >/dev/null 2>&1; then
+    kind=flatpak
+    package=${file%.desktop}
+  fi
+fi
+
+case $mode in
+  plan)
+    echo "kind=$kind"
+    echo "package=$package"
+    if [[ $kind == package ]]; then
+      # A dry run: pacman lists the targets, or explains why it would refuse.
+      if out=$(pacman -Rsp --print-format '%n' "$package" 2>&1); then
+        also=$(grep -vxF "$package" <<<"$out" | tr '\n' ' ')
+        echo "also=${also% }"
+      else
+        blocked=$(grep -m1 'breaks dependency' <<<"$out" | sed -E "s/.*required by ([^ ]+).*/\1/")
+        echo "blocked=${blocked:-pacman refuses}"
+      fi
+    fi
+    ;;
+  run)
+    case $kind in
+      webapp|tui|user) exec "$dir/bin/omarchy-remove-launcher-entry" "$id" "$name" ;;
+      package) exec pkexec pacman -Rns --noconfirm "$package" ;;
+      flatpak) exec flatpak uninstall -y --noninteractive "$package" ;;
+      *) echo "Don't know how to uninstall $file" >&2; exit 1 ;;
+    esac
+    ;;
+  *)
+    echo "unknown mode: $mode" >&2
+    exit 2
+    ;;
+esac
