@@ -22,6 +22,18 @@ To open it with SUPER+A, add this line to `~/.config/hypr/bindings.lua`:
 o.bind("SUPER + A", "Savanna", "omarchy-shell shell toggle x99.savanna '{}'")
 ```
 
+To open it like Launchpad, with a four-finger pinch (and close it by
+spreading the fingers), add this to `~/.config/hypr/input.lua`:
+
+```lua
+hl.gesture({ fingers = 4, direction = "pinchout", action = function()
+  hl.exec_cmd("omarchy-shell shell summon x99.savanna '{}'")
+end })
+hl.gesture({ fingers = 4, direction = "pinchin", action = function()
+  hl.exec_cmd("omarchy-shell shell call x99.savanna dismiss x")
+end })
+```
+
 To install by hand instead, clone the repository to
 `~/.config/omarchy/plugins/x99.savanna/` (a real folder, not a symlink), run
 `omarchy-restart-shell`, then `omarchy plugin enable x99.savanna`.
