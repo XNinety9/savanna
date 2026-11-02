@@ -1,0 +1,7 @@
+/target/
+/build/
+*.log
+
+# Local working notes, not published
+CLAUDE.md
+docs/

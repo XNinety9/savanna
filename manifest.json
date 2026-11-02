@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "id": "x99.savanna",
+  "name": "Savanna",
+  "version": "0.1.0",
+  "author": "XNinety9",
+  "license": "WTFPL",
+  "description": "Fullscreen app launcher: a paged grid of every application, filtered as you type.",
+  "kinds": [
+    "menu",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "menu": "Savanna.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Savanna",
+    "description": "Opens the Savanna app grid",
+    "category": "Compositor",
+    "allowMultiple": false,
+    "defaults": {
+      "size": "Fullscreen",
+      "width": 0.7,
+      "height": 0.75,
+      "borderWidth": 2,
+      "columns": 7,
+      "rows": 5,
+      "paging": "Horizontal",
+      "iconSize": 96,
+      "showLabels": true,
+      "backdrop": "Wallpaper",
+      "blur": 1.0,
+      "dim": 0.45,
+      "glow": true,
+      "shadows": true,
+      "animations": "Full"
+    },
+    "schema": [
+      {
+        "key": "size",
+        "type": "enum",
+        "label": "Size",
+        "options": [
+          "Fullscreen",
+          "Centered"
+        ],
+        "defaultValue": "Fullscreen",
+        "description": "Fullscreen like Launchpad, or a bordered card in the middle of the screen."
+      },
+      {
+        "key": "width",
+        "type": "number",
+        "label": "Card width",
+        "min": 0.3,
+        "max": 1,
+        "step": 0.05,
+        "defaultValue": 0.7,
+        "description": "Fraction of the screen width. Centered size only."
+      },
+      {
+        "key": "height",
+        "type": "number",
+        "label": "Card height",
+        "min": 0.3,
+        "max": 1,
+        "step": 0.05,
+        "defaultValue": 0.75,
+        "description": "Fraction of the screen height. Centered size only."
+      },
+      {
+        "key": "borderWidth",
+        "type": "integer",
+        "label": "Card border (px)",
+        "min": 0,
+        "max": 12,
+        "step": 1,
+        "defaultValue": 2,
+        "description": "Uses the theme's Hyprland active border colour; override with [savanna] border in shell.toml."
+      },
+      {
+        "key": "radius",
+        "type": "integer",
+        "label": "Card corner radius (px)",
+        "min": 0,
+        "max": 64,
+        "step": 1,
+        "description": "Leave unset to follow the theme's corner radius."
+      },
+      {
+        "key": "columns",
+        "type": "integer",
+        "label": "Columns",
+        "min": 3,
+        "max": 12,
+        "step": 1,
+        "defaultValue": 7
+      },
+      {
+        "key": "rows",
+        "type": "integer",
+        "label": "Rows",
+        "min": 2,
+        "max": 8,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "paging",
+        "type": "enum",
+        "label": "Page direction",
+        "options": [
+          "Horizontal",
+          "Vertical"
+        ],
+        "defaultValue": "Horizontal",
+        "description": "Horizontal: pages side by side, dots below. Vertical: pages stacked, dots on the right."
+      },
+      {
+        "key": "iconSize",
+        "type": "integer",
+        "label": "Icon size (px)",
+        "min": 32,
+        "max": 192,
+        "step": 8,
+        "defaultValue": 96,
+        "description": "Largest icon size; icons shrink to fit when the grid is dense."
+      },
+      {
+        "key": "showLabels",
+        "type": "boolean",
+        "label": "Show app names",
+        "defaultValue": true
+      },
+      {
+        "key": "backdrop",
+        "type": "enum",
+        "label": "Backdrop",
+        "options": [
+          "Wallpaper",
+          "Glass",
+          "Desktop",
+          "Solid"
+        ],
+        "defaultValue": "Wallpaper",
+        "description": "Wallpaper: the current wallpaper, blurred. Glass: frosted glass over the live desktop (needs the Hyprland blur rule from the README). Desktop: a tint over the live desktop. Solid: the theme background."
+      },
+      {
+        "key": "blur",
+        "type": "number",
+        "label": "Wallpaper blur",
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "defaultValue": 1.0,
+        "description": "0 = sharp wallpaper, 1 = fully blurred. Wallpaper backdrop only."
+      },
+      {
+        "key": "dim",
+        "type": "number",
+        "label": "Dim",
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "defaultValue": 0.45,
+        "description": "Strength of the theme tint over the backdrop."
+      },
+      {
+        "key": "glow",
+        "type": "boolean",
+        "label": "Accent glow",
+        "defaultValue": true,
+        "description": "Soft accent-coloured glow above the search field."
+      },
+      {
+        "key": "shadows",
+        "type": "boolean",
+        "label": "Icon shadows",
+        "defaultValue": true
+      },
+      {
+        "key": "animations",
+        "type": "enum",
+        "label": "Animations",
+        "options": [
+          "Full",
+          "Subtle",
+          "None"
+        ],
+        "defaultValue": "Full",
+        "description": "Full: ripple entrance, zooms and springy hovers. Subtle: plain fades and slides. None: instant."
+      }
+    ]
+  }
+}
