@@ -8,26 +8,25 @@ Savanna is an Omarchy shell plugin (Omarchy 4).
 
 ## Install
 
-1. Put this folder at `~/.config/omarchy/plugins/x99.savanna/`. Use a real
-   folder there, not a symlink: the shell does not follow symlinks when it
-   watches for changes.
-2. Restart the shell so it picks up the new plugin:
+```sh
+omarchy plugin add https://github.com/XNinety9/savanna --enable
+```
 
-   ```sh
-   omarchy-restart-shell
-   ```
+This installs Savanna into `~/.config/omarchy/plugins/x99.savanna/` and puts
+its button on the left of the bar. If the button does not show up, restart
+the shell with `omarchy-restart-shell`.
 
-3. Add the launcher button to the bar:
+To open it with SUPER+A, add this line to `~/.config/hypr/bindings.lua`:
 
-   ```sh
-   omarchy bar put x99.savanna --after omarchy.menu
-   ```
+```lua
+o.bind("SUPER + A", "Savanna", "omarchy-shell shell toggle x99.savanna '{}'")
+```
 
-4. Optional: open it with SUPER+A. Add this line to `~/.config/hypr/bindings.lua`:
+To install by hand instead, clone the repository to
+`~/.config/omarchy/plugins/x99.savanna/` (a real folder, not a symlink), run
+`omarchy-restart-shell`, then `omarchy plugin enable x99.savanna`.
 
-   ```lua
-   o.bind("SUPER + A", "Savanna", "omarchy-shell shell toggle x99.savanna '{}'")
-   ```
+To update later: `omarchy plugin update x99.savanna`.
 
 ## Use
 

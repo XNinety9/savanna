@@ -19,6 +19,7 @@
     "displayName": "Savanna",
     "description": "Opens the Savanna app grid",
     "category": "Compositor",
+    "defaultSection": "left",
     "allowMultiple": false,
     "defaults": {
       "size": "Fullscreen",
